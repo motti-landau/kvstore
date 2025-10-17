@@ -2,6 +2,8 @@ target/
 logs/
 *.log
 *.db
+*.db-shm
+*.db-wal
 data.json
 kvstore.toml
 config/kvstore.toml

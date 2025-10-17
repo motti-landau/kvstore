@@ -13,6 +13,13 @@ pub struct Database {
 impl Database {
     /// Opens or creates the SQLite database, ensuring the schema is up to date.
     pub fn connect<P: AsRef<Path>>(path: P) -> KvResult<Self> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(3))?;
         let mut db = Self { conn };
