@@ -1,0 +1,10 @@
+target/
+logs/
+*.log
+*.db
+data.json
+kvstore.toml
+config/kvstore.toml
+
+# macOS artifacts
+.DS_Store

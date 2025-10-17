@@ -1,10 +1,11 @@
 # kvstore
 
-`kvstore` is a lightweight Rust CLI for storing and retrieving key–value pairs in a local JSON file.  
-Keys can carry optional tags, and fuzzy search spans both keys and tags for quick recall.
+`kvstore` is a lightweight Rust CLI for storing and retrieving key–value pairs.  
+Entries are durably stored in a bundled SQLite database while a fast in-memory cache backs fuzzy lookups.
 
 ## Features
-- Plain JSON persistence (`data.json` by default) with automatic file bootstrapping.
+- Bundled SQLite persistence (`data.db` by default) with automatic schema setup.
+- Memory-cached reads for instant lookups and fuzzy search.
 - Add, update, list, fetch, delete, export, and import entries.
 - Optional tagging on every key; tags are stored and normalised.
 - Fuzzy search over keys _and_ tags (configurable to target one or the other).
@@ -25,20 +26,28 @@ source ~/.zshrc
 
 Now `kv …` works from any directory.
 
-## Storage Format
+## Storage Model
+- On startup the app opens the SQLite database, applies migrations, and loads all rows into memory (`HashMap<String, Entry>` + cached key list).
+- Reads (`get`, `list`, `search`, `f`) operate exclusively on the in-memory cache.
+- Mutations (`add`, `remove`, `import`) are wrapped in SQLite transactions; once the write succeeds the cache is updated in lockstep.
+- Export/import still work with JSON snapshots for easy backups or transfers.
 
-Entries are stored as:
+## Logging
+- Runtime logs are written to `logs/kvstore.log` relative to the working directory.
+- The directory is created on demand; all levels default to `info` with timestamped entries.
+- Logs are not echoed to stdout/stderr, so the CLI output stays clean.
 
-```json
-{
-  "example": {
-    "value": "Some detail",
-    "tags": ["note", "personal"]
-  }
-}
+## Configuration
+- Optional settings can be supplied via `kvstore.toml` (project root) or `config/kvstore.toml`.
+- Example:
+
+```toml
+[logging]
+level = "warn"      # trace | debug | info | warn | error
+file = "kvstore.log" # relative paths live under ./logs/
 ```
 
-Existing flat JSON files (mapping keys straight to string values) are upgraded automatically on load.
+- Environment variable `KVSTORE_LOG_LEVEL` continues to override the configured level when present.
 
 ## Usage
 
@@ -74,8 +83,8 @@ kv <command> [args]
 - `-l/--limit` controls how many matches appear (default: 10).
 
 ## Data Management
-- Pass `--data-file path/to/file.json` to operate on an alternative store.
-- `kv export` / `kv import` provide quick backups or migrations between machines.
+- Pass `--data-file path/to/store.db` to operate on an alternative SQLite database.
+- `kv export` / `kv import` provide quick JSON backups or migrations between machines.
 
 ## Development
 

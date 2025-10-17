@@ -6,11 +6,11 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     name = "kvstore",
-    about = "Simple key-value store backed by a JSON file"
+    about = "Simple key-value store backed by SQLite with an in-memory cache"
 )]
 #[command(author, version)]
 pub struct Cli {
-    /// Path to the JSON data file. Defaults to ./data.json
+    /// Path to the SQLite database file. Defaults to ./data.db
     #[arg(long, global = true, value_name = "FILE")]
     pub data_file: Option<PathBuf>,
 
@@ -29,9 +29,7 @@ pub enum Command {
         tags: Vec<String>,
     },
     #[command(name = "g", alias = "get")]
-    Get {
-        key: String,
-    },
+    Get { key: String },
     /// Removes the given key and its value. Shortcut: `r`
     #[command(name = "r", aliases = ["remove", "delete", "rm"])]
     Remove {

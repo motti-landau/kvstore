@@ -6,13 +6,13 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::queue;
 use crossterm::terminal::{self, ClearType};
 
-use crate::storage::{SearchScope, Storage};
+use crate::store::{SearchScope, Store};
 use crate::KvResult;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(120);
 
 /// Runs an interactive fuzzy-search session that refreshes results as the user types.
-pub fn live_search(storage: &Storage, limit: usize, scope: SearchScope) -> KvResult<()> {
+pub fn live_search(storage: &Store, limit: usize, scope: SearchScope) -> KvResult<()> {
     let mut stdout = stdout();
     let guard = RawTerminalGuard::new()?;
     let mut input = String::new();
@@ -79,7 +79,7 @@ fn handle_key_event(event: KeyEvent, input: &mut String) -> bool {
 
 fn render(
     stdout: &mut io::Stdout,
-    storage: &Storage,
+    storage: &Store,
     input: &str,
     limit: usize,
     scope: SearchScope,
