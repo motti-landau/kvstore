@@ -15,10 +15,12 @@ use serde::{Deserialize, Serialize};
 use cli::{Cli, Command};
 use db::Database;
 use interactive::live_search;
-use store::{Entry, SearchScope, Store};
+use settings::AppSettings;
+use store::{Entry, RecentConfig, SearchScope, Store};
 use thiserror::Error;
 
 pub const DEFAULT_DATA_FILE: &str = "data.db";
+const DEFAULT_RECENT_LOG: &str = "logs/recent.log";
 
 pub type KvResult<T> = Result<T, KvError>;
 
@@ -42,7 +44,7 @@ pub enum KvError {
 }
 
 /// Executes the application logic for the provided CLI arguments.
-pub fn run(cli: Cli) -> KvResult<()> {
+pub fn run(cli: Cli, settings: &AppSettings) -> KvResult<()> {
     let db_path = cli
         .data_file
         .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_FILE));
@@ -52,14 +54,27 @@ pub fn run(cli: Cli) -> KvResult<()> {
     let entries = database.load_entries()?;
     let mut store = Store::from_entries(entries);
 
+    let history_settings = settings.history();
+    let recent_path = history_settings
+        .file()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_RECENT_LOG));
+    let recent_limit = history_settings.limit();
+    if recent_limit > 0 {
+        let config = RecentConfig::new(recent_path, recent_limit);
+        store.enable_recent_history(config);
+    }
+
     match cli.command {
         Command::Add { key, value, tags } => {
-            handle_add(&mut database, &mut store, key, value, tags)?;
+            handle_add(&mut database, &mut store, key, value, tags)?
         }
         Command::Get { key } => {
             let entry = store
                 .get(&key)
-                .ok_or_else(|| KvError::NotFound(key.clone()))?;
+                .ok_or_else(|| KvError::NotFound(key.clone()))?
+                .clone();
+            store.record_access(&key);
             println!("{}", entry.value());
             if !entry.tags().is_empty() {
                 println!("tags: {}", entry.tags().join(", "));
@@ -101,13 +116,23 @@ pub fn run(cli: Cli) -> KvResult<()> {
             handle_import(&mut database, &mut store, &path)?;
             println!("Imported entries from {}", path.display());
         }
-        Command::Live {
+        Command::Interactive {
             limit,
             tags_only,
             keys_only,
         } => {
             let scope = resolve_scope(tags_only, keys_only)?;
             live_search(&store, limit, scope)?;
+        }
+        Command::Recent { limit } => {
+            let recent = store.recent(limit);
+            if recent.is_empty() {
+                println!("No recent keys recorded.");
+            } else {
+                for (idx, key) in recent.iter().enumerate() {
+                    println!("{:>2}. {}", idx + 1, key);
+                }
+            }
         }
     }
 
@@ -134,6 +159,7 @@ fn handle_add(
 
     database.upsert_entry(&key, &entry)?;
     let previous = store.insert(key.clone(), entry.clone());
+    store.record_access(&key);
 
     match previous {
         Some(old) => println!(

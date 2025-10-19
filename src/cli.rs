@@ -1,51 +1,104 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 
-/// Command-line interface for the kvstore application.
-#[derive(Debug, Parser)]
-#[command(
-    name = "kvstore",
-    about = "Simple key-value store backed by SQLite with an in-memory cache"
-)]
-#[command(author, version)]
+pub const DEFAULT_INTERACTIVE_LIMIT: usize = 10;
+const HELP_EXAMPLES: &str = r#"Examples:
+  kv foo bar            # Add key/value implicitly
+  kv foo bar @prod @api # Add with tags
+  kv foo                # Get value implicitly
+  kv foo @prod          # Add with empty value and tags
+  kv                    # Interactive fuzzy finder
+
+Explicit commands:
+  kv add foo bar @prod  # Add/update with tags
+  kv get foo            # Get a value
+  kv remove foo         # Delete a key
+  kv list               # List all keys
+  kv search api -l 5    # Fuzzy search with limit
+  kv interactive        # Live fuzzy finder mode
+  kv export backup.json # Export to JSON
+  kv import backup.json # Import from JSON
+  kv recent             # Show recently accessed keys
+"#;
+
+pub const RESERVED_KEYWORDS: &[&str] = &[
+    "add",
+    "a",
+    "get",
+    "g",
+    "remove",
+    "r",
+    "list",
+    "l",
+    "search",
+    "s",
+    "interactive",
+    "f",
+    "export",
+    "e",
+    "import",
+    "i",
+    "recent",
+];
+
+/// Public CLI representation consumed by the application.
+#[derive(Debug)]
 pub struct Cli {
-    /// Path to the SQLite database file. Defaults to ./data.db
-    #[arg(long, global = true, value_name = "FILE")]
     pub data_file: Option<PathBuf>,
-
-    #[command(subcommand)]
     pub command: Command,
 }
 
+#[derive(Debug, Parser)]
+#[command(
+    name = "kv",
+    author,
+    version,
+    about = "Simple key-value store backed by SQLite with an in-memory cache",
+    long_about = "Simple key-value store backed by SQLite with an in-memory cache.\n\
+Supports implicit commands (kv <key> ...) and explicit subcommands for advanced usage.",
+    disable_help_subcommand = true,
+    propagate_version = true,
+    after_long_help = HELP_EXAMPLES
+)]
+struct RawCli {
+    /// Path to the SQLite database file. Defaults to ./data.db
+    #[arg(long, global = true, value_name = "FILE")]
+    data_file: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<RawCommand>,
+}
+
+/// Subcommands supported by the CLI. Used for both explicit and inferred commands.
 #[derive(Debug, Subcommand)]
-pub enum Command {
+enum RawCommand {
     /// Adds or updates a key-value pair. Shortcut: `a`
-    #[command(name = "a", alias = "add")]
+    #[command(name = "add", alias = "a", trailing_var_arg = true)]
     Add {
         key: String,
-        value: String,
-        #[arg(short, long, value_name = "TAG")]
-        tags: Vec<String>,
+        #[arg(value_name = "VALUE|@TAG", num_args = 0..)]
+        rest: Vec<String>,
     },
-    #[command(name = "g", alias = "get")]
+    /// Retrieves the value stored for a key. Shortcut: `g`
+    #[command(name = "get", alias = "g")]
     Get { key: String },
     /// Removes the given key and its value. Shortcut: `r`
-    #[command(name = "r", aliases = ["remove", "delete", "rm"])]
+    #[command(name = "remove", alias = "r", aliases = ["delete", "rm"])]
     Remove {
         /// Key to remove.
         key: String,
     },
     /// Lists all stored key-value pairs. Shortcut: `l`
-    #[command(name = "l", alias = "list")]
+    #[command(name = "list", alias = "l")]
     List,
     /// Performs fuzzy search on keys. Shortcut: `s`
-    #[command(name = "s", alias = "search")]
+    #[command(name = "search", alias = "s")]
     Search {
         /// Pattern to fuzzy match against stored keys.
         pattern: String,
         /// Maximum number of matches to display.
-        #[arg(short, long, default_value_t = 10)]
+        #[arg(short, long, default_value_t = DEFAULT_INTERACTIVE_LIMIT)]
         limit: usize,
         /// Search only within tags.
         #[arg(long = "tags", conflicts_with = "keys_only")]
@@ -55,10 +108,10 @@ pub enum Command {
         keys_only: bool,
     },
     /// Opens live fuzzy search. Shortcut: `f`
-    #[command(name = "f", aliases = ["interactive", "live"])]
-    Live {
+    #[command(name = "interactive", alias = "f", aliases = ["live"])]
+    Interactive {
         /// Maximum number of matches to display.
-        #[arg(short, long, default_value_t = 10)]
+        #[arg(short, long, default_value_t = DEFAULT_INTERACTIVE_LIMIT)]
         limit: usize,
         /// Search only within tags.
         #[arg(long = "tags", conflicts_with = "keys_only")]
@@ -68,15 +121,215 @@ pub enum Command {
         keys_only: bool,
     },
     /// Exports all entries. Shortcut: `e`
-    #[command(name = "e", alias = "export")]
+    #[command(name = "export", alias = "e")]
     Export {
         /// Destination file path.
         path: PathBuf,
     },
     /// Imports entries from the provided JSON file, replacing current data. Shortcut: `i`
-    #[command(name = "i", alias = "import")]
+    #[command(name = "import", alias = "i")]
     Import {
         /// Source file path.
         path: PathBuf,
     },
+    /// Displays the most recently accessed keys.
+    #[command(name = "recent")]
+    Recent {
+        /// Maximum number of keys to display.
+        #[arg(short, long, value_name = "COUNT", default_value_t = DEFAULT_INTERACTIVE_LIMIT)]
+        limit: usize,
+    },
+    /// Captures any external/unknown subcommand for implicit inference.
+    #[command(external_subcommand)]
+    External(Vec<String>),
+}
+
+#[derive(Debug)]
+pub enum Command {
+    Add {
+        key: String,
+        value: String,
+        tags: Vec<String>,
+    },
+    Get {
+        key: String,
+    },
+    Remove {
+        key: String,
+    },
+    List,
+    Search {
+        pattern: String,
+        limit: usize,
+        tags_only: bool,
+        keys_only: bool,
+    },
+    Interactive {
+        limit: usize,
+        tags_only: bool,
+        keys_only: bool,
+    },
+    Export {
+        path: PathBuf,
+    },
+    Import {
+        path: PathBuf,
+    },
+    Recent {
+        limit: usize,
+    },
+}
+
+impl Cli {
+    pub fn parse() -> Self {
+        let raw = RawCli::parse();
+        let command = match raw.command {
+            None => Command::Interactive {
+                limit: DEFAULT_INTERACTIVE_LIMIT,
+                tags_only: false,
+                keys_only: false,
+            },
+            Some(raw_command) => convert_command(raw_command),
+        };
+
+        Self {
+            data_file: raw.data_file,
+            command,
+        }
+    }
+}
+
+fn convert_command(raw: RawCommand) -> Command {
+    match raw {
+        RawCommand::Add { key, rest } => {
+            let (value, tags) = parse_value_and_tags(&rest);
+            Command::Add { key, value, tags }
+        }
+        RawCommand::Get { key } => Command::Get { key },
+        RawCommand::Remove { key } => Command::Remove { key },
+        RawCommand::List => Command::List,
+        RawCommand::Search {
+            pattern,
+            limit,
+            tags_only,
+            keys_only,
+        } => Command::Search {
+            pattern,
+            limit,
+            tags_only,
+            keys_only,
+        },
+        RawCommand::Interactive {
+            limit,
+            tags_only,
+            keys_only,
+        } => Command::Interactive {
+            limit,
+            tags_only,
+            keys_only,
+        },
+        RawCommand::Export { path } => Command::Export { path },
+        RawCommand::Import { path } => Command::Import { path },
+        RawCommand::Recent { limit } => Command::Recent { limit },
+        RawCommand::External(args) => infer_command(args),
+    }
+}
+
+fn infer_command(args: Vec<String>) -> Command {
+    match args.as_slice() {
+        [] => Command::Interactive {
+            limit: DEFAULT_INTERACTIVE_LIMIT,
+            tags_only: false,
+            keys_only: false,
+        },
+        [candidate] => {
+            if is_reserved(candidate) {
+                usage_error(
+                    ErrorKind::InvalidSubcommand,
+                    &format!(
+                        "'{candidate}' is a reserved command keyword. Use `kv {candidate} ...` explicitly."
+                    ),
+                );
+            }
+            Command::Get {
+                key: candidate.clone(),
+            }
+        }
+        [key, rest @ ..] => {
+            if is_reserved(key) {
+                usage_error(
+                    ErrorKind::InvalidSubcommand,
+                    &format!(
+                        "'{key}' is a reserved command keyword. Use the explicit command form."
+                    ),
+                );
+            }
+            let (value, tags) = parse_value_and_tags(rest);
+            Command::Add {
+                key: key.clone(),
+                value,
+                tags,
+            }
+        }
+    }
+}
+
+fn parse_value_and_tags(rest: &[String]) -> (String, Vec<String>) {
+    if rest.is_empty() {
+        return (String::new(), Vec::new());
+    }
+
+    let mut value: Option<String> = None;
+    let mut tags = Vec::new();
+    let mut tags_started = false;
+
+    for token in rest {
+        if let Some(tag) = parse_tag(token) {
+            tags.push(tag);
+            tags_started = true;
+            continue;
+        }
+
+        if tags_started {
+            usage_error(
+                ErrorKind::InvalidValue,
+                "Tags (arguments starting with '@') must come after the value.",
+            );
+        }
+
+        if value.is_none() {
+            value = Some(token.clone());
+        } else {
+            usage_error(
+                ErrorKind::TooManyValues,
+                "Too many positional arguments. Expect `kv <key> <value> @tag...`.",
+            );
+        }
+    }
+
+    (value.unwrap_or_default(), tags)
+}
+
+fn parse_tag(token: &str) -> Option<String> {
+    if !token.starts_with('@') {
+        return None;
+    }
+    let tag = token.trim_start_matches('@');
+    if tag.is_empty() {
+        usage_error(
+            ErrorKind::InvalidValue,
+            "Tag names cannot be empty. Use '@name'.",
+        );
+    }
+    Some(tag.to_string())
+}
+
+fn is_reserved(word: &str) -> bool {
+    RESERVED_KEYWORDS
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(word))
+}
+
+fn usage_error(kind: ErrorKind, message: &str) -> ! {
+    RawCli::command().error(kind, message).exit()
 }

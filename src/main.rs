@@ -1,5 +1,3 @@
-use clap::Parser;
-
 use kvstore::cli::Cli;
 use kvstore::settings::AppSettings;
 
@@ -8,7 +6,7 @@ fn main() {
     init_logging(&settings);
 
     let cli = Cli::parse();
-    if let Err(error) = kvstore::run(cli) {
+    if let Err(error) = kvstore::run(cli, &settings) {
         eprintln!("Error: {error}");
         std::process::exit(1);
     }

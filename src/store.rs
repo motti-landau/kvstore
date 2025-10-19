@@ -1,9 +1,12 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use log::{debug, info};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::KvResult;
@@ -120,9 +123,14 @@ pub enum SearchScope {
 pub struct Store {
     entries: HashMap<String, Entry>,
     search_keys: Vec<String>,
+    recent: VecDeque<String>,
+    recent_capacity: usize,
+    recent_file: Option<PathBuf>,
 }
 
 impl Store {
+    const RECENT_CAPACITY: usize = 50;
+
     pub fn from_entries(entries: Vec<(String, Entry)>) -> Self {
         let mut map = HashMap::new();
         let mut search_keys = Vec::with_capacity(entries.len());
@@ -137,6 +145,9 @@ impl Store {
         Self {
             entries: map,
             search_keys,
+            recent: VecDeque::with_capacity(Self::RECENT_CAPACITY),
+            recent_capacity: Self::RECENT_CAPACITY,
+            recent_file: None,
         }
     }
 
@@ -162,11 +173,13 @@ impl Store {
         let removed = self.entries.remove(key);
         if removed.is_some() {
             self.search_keys.retain(|candidate| candidate != key);
+            self.recent.retain(|candidate| candidate != key);
             info!(
                 "cache removed key={}; total_entries={}",
                 key,
                 self.entries.len()
             );
+            self.prune_recent();
         }
         removed
     }
@@ -175,12 +188,14 @@ impl Store {
     pub fn reset(&mut self, entries: Vec<(String, Entry)>) {
         self.entries.clear();
         self.search_keys.clear();
+        self.recent.clear();
         for (key, entry) in entries {
             self.search_keys.push(key.clone());
             self.entries.insert(key, entry);
         }
         self.search_keys.sort();
         info!("cache reset; total_entries={}", self.entries.len());
+        self.prune_recent();
     }
 
     pub fn ordered(&self) -> Vec<(&String, &Entry)> {
@@ -269,6 +284,99 @@ impl Store {
         }
         set.into_iter().collect()
     }
+
+    pub fn record_access(&mut self, key: &str) {
+        if !self.entries.contains_key(key) {
+            return;
+        }
+
+        self.recent.retain(|candidate| candidate != key);
+        self.recent.push_front(key.to_string());
+        self.recent.truncate(self.recent_capacity);
+        self.persist_recent();
+    }
+
+    pub fn recent(&self, limit: usize) -> Vec<String> {
+        self.recent.iter().take(limit).cloned().collect()
+    }
+
+    /// Enables persistence for the recent history using the provided configuration.
+    pub fn enable_recent_history(&mut self, config: RecentConfig) {
+        self.recent_capacity = config.capacity;
+        self.recent_file = Some(config.path.clone());
+        self.recent = load_recent_history(&config.path, self.recent_capacity);
+        self.prune_recent();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn sample_entries() -> Vec<(String, Entry)> {
+        vec![
+            ("alpha".to_string(), Entry::new("A".to_string(), vec![])),
+            ("beta".to_string(), Entry::new("B".to_string(), vec![])),
+            ("gamma".to_string(), Entry::new("C".to_string(), vec![])),
+        ]
+    }
+
+    #[test]
+    fn record_access_persists_recent_history() {
+        let temp = tempdir().unwrap();
+        let recent_path = temp.path().join("recent.log");
+
+        {
+            let mut store = Store::from_entries(sample_entries());
+            store.enable_recent_history(RecentConfig::new(recent_path.clone(), 3));
+            store.record_access("alpha");
+            store.record_access("beta");
+            store.record_access("gamma");
+        }
+
+        let mut store = Store::from_entries(sample_entries());
+        store.enable_recent_history(RecentConfig::new(recent_path.clone(), 3));
+        assert_eq!(
+            store.recent(3),
+            vec!["gamma".to_string(), "beta".to_string(), "alpha".to_string()]
+        );
+
+        let contents = fs::read_to_string(recent_path).unwrap();
+        let lines: Vec<_> = contents.lines().collect();
+        assert_eq!(lines, vec!["gamma", "beta", "alpha"]);
+    }
+
+    #[test]
+    fn unknown_keys_are_dropped_when_loading_recent_history() {
+        let temp = tempdir().unwrap();
+        let recent_path = temp.path().join("recent.log");
+        fs::write(&recent_path, "delta\nalpha\n").unwrap();
+
+        let mut store = Store::from_entries(sample_entries());
+        store.enable_recent_history(RecentConfig::new(recent_path.clone(), 5));
+        assert_eq!(store.recent(5), vec!["alpha".to_string()]);
+
+        let contents = fs::read_to_string(recent_path).unwrap();
+        assert_eq!(contents.trim(), "alpha");
+    }
+
+    #[test]
+    fn removing_keys_updates_recent_history_file() {
+        let temp = tempdir().unwrap();
+        let recent_path = temp.path().join("recent.log");
+
+        let mut store = Store::from_entries(sample_entries());
+        store.enable_recent_history(RecentConfig::new(recent_path.clone(), 5));
+        store.record_access("alpha");
+        store.record_access("beta");
+        store.remove("beta");
+        drop(store);
+
+        let contents = fs::read_to_string(recent_path).unwrap();
+        assert_eq!(contents.trim(), "alpha");
+    }
 }
 
 pub struct SearchResult<'a> {
@@ -288,4 +396,105 @@ fn matches_keys(scope: SearchScope) -> bool {
 
 fn matches_tags(scope: SearchScope) -> bool {
     matches!(scope, SearchScope::All | SearchScope::TagsOnly)
+}
+
+fn load_recent_history(path: &Path, capacity: usize) -> VecDeque<String> {
+    if capacity == 0 {
+        return VecDeque::new();
+    }
+
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            let mut deque = VecDeque::with_capacity(capacity);
+            for line in contents.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if deque.len() == capacity {
+                    break;
+                }
+                deque.push_back(trimmed.to_string());
+            }
+            deque
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => VecDeque::with_capacity(capacity),
+        Err(error) => {
+            warn!(
+                "failed to read recent history file '{}': {}",
+                path.display(),
+                error
+            );
+            VecDeque::with_capacity(capacity)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RecentConfig {
+    path: PathBuf,
+    capacity: usize,
+}
+
+impl RecentConfig {
+    pub fn new(path: PathBuf, capacity: usize) -> Self {
+        let capacity = capacity.max(1);
+        Self { path, capacity }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
+impl Store {
+    fn persist_recent(&self) {
+        let Some(path) = &self.recent_file else {
+            return;
+        };
+
+        if let Some(parent) = path.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                warn!(
+                    "failed to create recent history directory '{}': {}",
+                    parent.display(),
+                    error
+                );
+                return;
+            }
+        }
+
+        let payload = self
+            .recent
+            .iter()
+            .take(self.recent_capacity)
+            .map(|key| key.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if let Err(error) = fs::write(path, payload) {
+            warn!(
+                "failed to write recent history file '{}': {}",
+                path.display(),
+                error
+            );
+        }
+    }
+
+    fn prune_recent(&mut self) {
+        if self.recent.is_empty() {
+            self.persist_recent();
+            return;
+        }
+
+        self.recent.retain(|key| self.entries.contains_key(key));
+        if self.recent.len() > self.recent_capacity {
+            self.recent.truncate(self.recent_capacity);
+        }
+        self.persist_recent();
+    }
 }

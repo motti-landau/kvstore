@@ -11,6 +11,8 @@ use crate::KvResult;
 pub struct AppSettings {
     #[serde(default)]
     logging: LoggingSettings,
+    #[serde(default)]
+    history: HistorySettings,
 }
 
 impl AppSettings {
@@ -41,6 +43,11 @@ impl AppSettings {
     pub fn logging(&self) -> &LoggingSettings {
         &self.logging
     }
+
+    /// Returns an immutable reference to the history configuration.
+    pub fn history(&self) -> &HistorySettings {
+        &self.history
+    }
 }
 
 /// Logging related settings parsed from the configuration file.
@@ -54,6 +61,39 @@ impl LoggingSettings {
     /// Converts the textual level into a `LevelFilter`.
     pub fn level_filter(&self) -> Option<LevelFilter> {
         self.level.as_ref().and_then(|raw| parse_level(raw))
+    }
+}
+
+/// Controls how the recent activity log behaves.
+#[derive(Debug, Deserialize)]
+pub struct HistorySettings {
+    pub file: Option<String>,
+    #[serde(default = "HistorySettings::default_limit")]
+    limit: usize,
+}
+
+impl Default for HistorySettings {
+    fn default() -> Self {
+        Self {
+            file: None,
+            limit: Self::default_limit(),
+        }
+    }
+}
+
+impl HistorySettings {
+    const fn default_limit() -> usize {
+        25
+    }
+
+    /// Maximum number of keys to retain in the recent log.
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Optional path override for the recent log file.
+    pub fn file(&self) -> Option<&str> {
+        self.file.as_deref()
     }
 }
 

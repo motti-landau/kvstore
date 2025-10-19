@@ -1,15 +1,17 @@
 # kvstore
 
 `kvstore` is a lightweight Rust CLI for storing and retrieving key–value pairs.  
-Entries are durably stored in a bundled SQLite database while a fast in-memory cache backs fuzzy lookups.
+Entries are durably stored in a bundled SQLite database while a fast in-memory cache backs fuzzy lookups, implicit command inference, and persisted recent history.
 
 ## Features
 - Bundled SQLite persistence (`data.db` by default) with automatic schema setup.
 - Memory-cached reads for instant lookups and fuzzy search.
-- Add, update, list, fetch, delete, export, and import entries.
+- Implicit command inference: type just `kv`, `kv key`, or `kv key value [@tag …]` for the common flows.
+- Add, update, list, fetch, delete, recent history, export, and import entries (explicit subcommands still work when you need them).
 - Optional tagging on every key; tags are stored and normalised.
 - Fuzzy search over keys _and_ tags (configurable to target one or the other).
 - Inline live-search mode (`kv f`) that refreshes results as you type in the same terminal buffer.
+- Recent command (`kv recent`) that remembers the last accesses across CLI sessions.
 
 ## Installation
 
@@ -32,44 +34,49 @@ Now `kv …` works from any directory.
 - Mutations (`add`, `remove`, `import`) are wrapped in SQLite transactions; once the write succeeds the cache is updated in lockstep.
 - Export/import still work with JSON snapshots for easy backups or transfers.
 
-## Logging
-- Runtime logs are written to `logs/kvstore.log` relative to the working directory.
-- The directory is created on demand; all levels default to `info` with timestamped entries.
-- Logs are not echoed to stdout/stderr, so the CLI output stays clean.
+## Logging & History
+- Runtime logs default to `logs/kvstore.log` relative to the working directory (directory created on demand).
+- Recent key usage is persisted to `logs/recent.log` so `kv recent` survives across runs.
+- Both files and the retention limit (default 25 entries) are configurable in `kvstore.toml`.
+- Environment variable `KVSTORE_LOG_LEVEL` continues to override the configured log level when present.
 
-## Configuration
-- Optional settings can be supplied via `kvstore.toml` (project root) or `config/kvstore.toml`.
-- Example:
-
+### Configuration snippet
 ```toml
 [logging]
-level = "warn"      # trace | debug | info | warn | error
+level = "warn"       # trace | debug | info | warn | error
 file = "kvstore.log" # relative paths live under ./logs/
-```
 
-- Environment variable `KVSTORE_LOG_LEVEL` continues to override the configured level when present.
+[history]
+file = "logs/recent.log"
+limit = 25
+```
 
 ## Usage
 
-```
-kv <command> [args]
-```
+### Implicit commands
+- `kv` (no arguments) launches interactive mode.
+- `kv <key>` fetches the value for `<key>`.
+- `kv <key> <value> [@tag …]` stores/updates `<key>` with `<value>` and optional tags.
+- Prefix any tags with `@` (e.g., `@prod @api`). Supplying only tags records an entry with an empty value.
+- Reserved words (`add`, `get`, `recent`, etc.) are always treated as explicit commands; access literal keys with `kv get <reserved>`.
 
-| Shortcut | Long form        | Description |
-|----------|------------------|-------------|
-| `kv a`   | `kv add`         | Add/update: `kv a key value -t tag1 -t tag2` |
-| `kv g`   | `kv get`         | Print the stored value: `kv g key` |
-| `kv r`   | `kv remove`      | Delete a key: `kv r key` |
-| `kv l`   | `kv list`        | List all keys in lexical order |
-| `kv s`   | `kv search`      | Fuzzy search keys & tags: `kv s pattern [-l 20] [--keys|--tags]` |
-| `kv f`   | `kv interactive` | Live fuzzy search (updates on each keystroke) |
-| `kv e`   | `kv export`      | Export to JSON: `kv e backup.json` |
-| `kv i`   | `kv import`      | Import from JSON: `kv i backup.json` |
+### Explicit subcommands (still available when you need them)
+| Command           | Description |
+|-------------------|-------------|
+| `kv remove <key>` | Delete a key |
+| `kv list`         | List keys in lexical order |
+| `kv search …`     | Fuzzy search keys & tags (`--keys`/`--tags`, `-l` limit) |
+| `kv recent`       | Show the last accessed keys (persisted across sessions) |
+| `kv interactive`  | Live fuzzy search (same as running bare `kv`) |
+| `kv export …`     | Export to JSON |
+| `kv import …`     | Import from JSON |
+
+Side note: legacy aliases like `kv add`, `kv get`, and their single-letter forms remain functional for scripts that depend on them.
 
 ### Tagging
-- Supply tags during add/update with `-t/--tag`.
-- Repeating `-t` arguments replaces the tag set for that key.
-- Omitting `-t` keeps existing tags when updating a value.
+- Append `@tag` arguments during implicit or explicit add/update (`kv foo bar @prod @api`).
+- Repeating tag arguments replaces the tag set for that key.
+- Omitting tags keeps the existing tag set when updating a value.
 
 ### Search Modes
 - Default: search keys and tags simultaneously.
