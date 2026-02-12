@@ -1219,6 +1219,12 @@ fn resolve_namespace(raw: Option<&str>) -> KvResult<String> {
 }
 
 fn validate_namespace(namespace: &str) -> KvResult<()> {
+    if matches!(namespace, "." | "..") {
+        return Err(KvError::InvalidInput(format!(
+            "invalid namespace '{namespace}'; '.' and '..' are not allowed"
+        )));
+    }
+
     let is_valid = namespace
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'));
@@ -1419,4 +1425,22 @@ struct HtmlEntry<'a> {
     tags: &'a [String],
     created_at: String,
     updated_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_namespace;
+
+    #[test]
+    fn validate_namespace_rejects_dot_segments() {
+        assert!(validate_namespace(".").is_err());
+        assert!(validate_namespace("..").is_err());
+    }
+
+    #[test]
+    fn validate_namespace_allows_supported_chars() {
+        assert!(validate_namespace("work").is_ok());
+        assert!(validate_namespace("investments-2026").is_ok());
+        assert!(validate_namespace("team.alpha_1").is_ok());
+    }
 }

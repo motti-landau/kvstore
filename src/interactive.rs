@@ -88,24 +88,27 @@ fn render(
     scope: SearchScope,
 ) -> KvResult<usize> {
     let mut lines = 0usize;
+    let max_line_chars = current_line_width_limit();
 
-    write_line(stdout, &format!("Query: {input}"))?;
+    let query_line = fit_for_terminal(&format!("Query: {input}"), max_line_chars);
+    write_line(stdout, &query_line)?;
     lines += 1;
 
     if input.is_empty() {
-        write_line(stdout, "Type to search (Esc to exit).")?;
+        let message = fit_for_terminal("Type to search (Esc to exit).", max_line_chars);
+        write_line(stdout, &message)?;
         lines += 1;
     } else {
         let matches = storage.search(input, limit, scope);
         if matches.is_empty() {
-            write_line(stdout, "No matches found.")?;
+            let message = fit_for_terminal("No matches found.", max_line_chars);
+            write_line(stdout, &message)?;
             lines += 1;
         } else {
             for entry in matches {
-                write_line(
-                    stdout,
-                    &preview_line(entry.key, entry.entry.value(), entry.entry.tags()),
-                )?;
+                let preview = preview_line(entry.key, entry.entry.value(), entry.entry.tags());
+                let bounded_preview = fit_for_terminal(&preview, max_line_chars);
+                write_line(stdout, &bounded_preview)?;
                 lines += 1;
             }
         }
@@ -159,6 +162,16 @@ fn preview_line(key: &str, value: &str, tags: &[String]) -> String {
     }
 }
 
+fn current_line_width_limit() -> usize {
+    terminal::size()
+        .map(|(width, _)| width.saturating_sub(1) as usize)
+        .unwrap_or(120)
+}
+
+fn fit_for_terminal(input: &str, max_chars: usize) -> String {
+    truncate_for_display(&single_line(input), max_chars)
+}
+
 fn single_line(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -202,5 +215,23 @@ impl Drop for RawTerminalGuard {
         let mut out = stdout();
         let _ = queue!(out, Show);
         let _ = out.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fit_for_terminal, preview_line};
+
+    #[test]
+    fn fit_for_terminal_single_lines_and_truncates() {
+        let output = fit_for_terminal("abc   def\nghi", 9);
+        assert_eq!(output, "abc def g...");
+    }
+
+    #[test]
+    fn preview_line_truncates_long_key() {
+        let key = "this_is_a_very_long_key_name_that_should_be_trimmed_for_terminal_display";
+        let line = preview_line(key, "value", &[]);
+        assert!(line.contains("... = value"));
     }
 }

@@ -66,6 +66,7 @@ Precedence:
 
 Valid namespace characters:
 - letters, numbers, `_`, `-`, `.`
+- namespace cannot be `.` or `..`
 
 ### Advanced Override
 You can still bypass namespace DB resolution with:

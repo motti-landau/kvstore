@@ -12,10 +12,13 @@ VALUE ?=
 FILE ?=
 TAGS ?=
 ARGS ?=
+CARGO_TOOLS_BIN ?= ./target/cargo-tools/bin
+AUDIT_DB ?= ./target/advisory-db
+AUDIT_FLAGS ?= --db $(AUDIT_DB) --no-fetch --stale
 
 COMMON_FLAGS := $(if $(strip $(NS)),-n $(NS),) $(if $(strip $(DATA_FILE)),--data-file $(DATA_FILE),)
 
-.PHONY: help build fmt check test clippy install run serve html list get add remove search recent export import put-file get-file
+.PHONY: help build fmt check test clippy audit install run serve html list get add remove search recent export import put-file get-file
 
 help:
 	@echo "kvstore shortcuts"
@@ -26,6 +29,7 @@ help:
 	@echo "  make check"
 	@echo "  make test"
 	@echo "  make clippy"
+	@echo "  make audit"
 	@echo "  make install"
 	@echo ""
 	@echo "Run arbitrary command:"
@@ -57,6 +61,17 @@ test:
 
 clippy:
 	cargo clippy --all-targets --all-features -- -D warnings
+
+audit:
+	@if command -v cargo-audit >/dev/null 2>&1; then \
+		cargo-audit audit $(AUDIT_FLAGS); \
+	elif [ -x "$(CARGO_TOOLS_BIN)/cargo-audit" ]; then \
+		"$(CARGO_TOOLS_BIN)/cargo-audit" audit $(AUDIT_FLAGS); \
+	else \
+		echo "cargo-audit not found. Install with: cargo install cargo-audit"; \
+		echo "or install locally with: cargo install cargo-audit --root ./target/cargo-tools"; \
+		exit 1; \
+	fi
 
 install:
 	cargo install --path . --force

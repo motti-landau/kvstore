@@ -5,6 +5,7 @@ logs/
 *.db-shm
 *.db-wal
 data.json
+kvstore-view.html
 kvstore.toml
 config/kvstore.toml
 
