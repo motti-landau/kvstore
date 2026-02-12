@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -155,14 +155,19 @@ impl Store {
         self.entries.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn get(&self, key: &str) -> Option<&Entry> {
         self.entries.get(key)
     }
 
     pub fn insert(&mut self, key: String, entry: Entry) -> Option<Entry> {
         if !self.entries.contains_key(&key) {
-            self.search_keys.push(key.clone());
-            self.search_keys.sort();
+            if let Err(position) = self.search_keys.binary_search(&key) {
+                self.search_keys.insert(position, key.clone());
+            }
         }
         let previous = self.entries.insert(key, entry);
         info!("cache updated; total_entries={}", self.entries.len());
@@ -172,7 +177,15 @@ impl Store {
     pub fn remove(&mut self, key: &str) -> Option<Entry> {
         let removed = self.entries.remove(key);
         if removed.is_some() {
-            self.search_keys.retain(|candidate| candidate != key);
+            if let Ok(position) = self
+                .search_keys
+                .binary_search_by(|candidate| candidate.as_str().cmp(key))
+            {
+                self.search_keys.remove(position);
+            } else {
+                // Keep index recoverable even if the key list ever gets out of sync.
+                self.search_keys.retain(|candidate| candidate != key);
+            }
             self.recent.retain(|candidate| candidate != key);
             info!(
                 "cache removed key={}; total_entries={}",
@@ -199,9 +212,10 @@ impl Store {
     }
 
     pub fn ordered(&self) -> Vec<(&String, &Entry)> {
-        let mut items: Vec<_> = self.entries.iter().collect();
-        items.sort_by(|(a, _), (b, _)| a.cmp(b));
-        items
+        self.search_keys
+            .iter()
+            .filter_map(|key| self.entries.get_key_value(key))
+            .collect()
     }
 
     pub fn search<'a>(
@@ -377,6 +391,42 @@ mod tests {
         let contents = fs::read_to_string(recent_path).unwrap();
         assert_eq!(contents.trim(), "alpha");
     }
+
+    #[test]
+    fn stale_prefix_does_not_drop_later_valid_recent_keys() {
+        let temp = tempdir().unwrap();
+        let recent_path = temp.path().join("recent.log");
+        fs::write(&recent_path, "missing-a\nmissing-b\nalpha\nbeta\n").unwrap();
+
+        let mut store = Store::from_entries(sample_entries());
+        store.enable_recent_history(RecentConfig::new(recent_path.clone(), 2));
+        assert_eq!(
+            store.recent(2),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+
+        let contents = fs::read_to_string(recent_path).unwrap();
+        let lines: Vec<_> = contents.lines().collect();
+        assert_eq!(lines, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn duplicate_recent_keys_are_deduplicated_on_load() {
+        let temp = tempdir().unwrap();
+        let recent_path = temp.path().join("recent.log");
+        fs::write(&recent_path, "alpha\nalpha\nbeta\nalpha\n").unwrap();
+
+        let mut store = Store::from_entries(sample_entries());
+        store.enable_recent_history(RecentConfig::new(recent_path.clone(), 5));
+        assert_eq!(
+            store.recent(5),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+
+        let contents = fs::read_to_string(recent_path).unwrap();
+        let lines: Vec<_> = contents.lines().collect();
+        assert_eq!(lines, vec!["alpha", "beta"]);
+    }
 }
 
 pub struct SearchResult<'a> {
@@ -406,15 +456,16 @@ fn load_recent_history(path: &Path, capacity: usize) -> VecDeque<String> {
     match fs::read_to_string(path) {
         Ok(contents) => {
             let mut deque = VecDeque::with_capacity(capacity);
+            let mut seen = HashSet::with_capacity(capacity);
             for line in contents.lines() {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
-                if deque.len() == capacity {
-                    break;
+                let key = trimmed.to_string();
+                if seen.insert(key.clone()) {
+                    deque.push_back(key);
                 }
-                deque.push_back(trimmed.to_string());
             }
             deque
         }
@@ -491,7 +542,9 @@ impl Store {
             return;
         }
 
-        self.recent.retain(|key| self.entries.contains_key(key));
+        let mut seen = HashSet::with_capacity(self.recent.len());
+        self.recent
+            .retain(|key| self.entries.contains_key(key) && seen.insert(key.clone()));
         if self.recent.len() > self.recent_capacity {
             self.recent.truncate(self.recent_capacity);
         }

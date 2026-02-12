@@ -4,7 +4,7 @@ use std::path::Path;
 use log::LevelFilter;
 use serde::Deserialize;
 
-use crate::KvResult;
+use crate::{KvError, KvResult};
 
 /// Represents the application configuration loaded from disk.
 #[derive(Debug, Default, Deserialize)]
@@ -34,7 +34,8 @@ impl AppSettings {
     }
 
     fn load_from_path(path: &str) -> KvResult<Self> {
-        let data = fs::read_to_string(path)?;
+        let data = fs::read_to_string(path)
+            .map_err(|error| KvError::io_path("reading settings file", path, error))?;
         let settings = toml::from_str::<AppSettings>(&data)?;
         Ok(settings)
     }

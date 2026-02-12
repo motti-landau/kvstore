@@ -16,11 +16,16 @@ impl Database {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    KvError::io_path("creating database directory", parent.to_path_buf(), error)
+                })?;
             }
         }
 
-        let conn = Connection::open(path)?;
+        let conn = Connection::open(path).map_err(|source| KvError::DbPath {
+            path: path.to_path_buf(),
+            source,
+        })?;
         conn.busy_timeout(std::time::Duration::from_secs(3))?;
         let mut db = Self { conn };
         db.initialize_schema()?;

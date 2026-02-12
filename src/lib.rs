@@ -29,10 +29,23 @@ pub type KvResult<T> = Result<T, KvError>;
 pub enum KvError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("I/O error while {action} '{path}': {source}")]
+    IoPath {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("data format error: {0}")]
     DataFormat(#[from] serde_json::Error),
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
+    #[error("database error while opening '{path}': {source}")]
+    DbPath {
+        path: PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
     #[error("config format error: {0}")]
     ConfigFormat(#[from] toml::de::Error),
     #[error("time parse error: {0}")]
@@ -41,6 +54,20 @@ pub enum KvError {
     NotFound(String),
     #[error("{0}")]
     InvalidInput(String),
+}
+
+impl KvError {
+    pub(crate) fn io_path(
+        action: &'static str,
+        path: impl Into<PathBuf>,
+        source: std::io::Error,
+    ) -> Self {
+        Self::IoPath {
+            action,
+            path: path.into(),
+            source,
+        }
+    }
 }
 
 /// Executes the application logic for the provided CLI arguments.
@@ -84,7 +111,7 @@ pub fn run(cli: Cli, settings: &AppSettings) -> KvResult<()> {
             handle_remove(&mut database, &mut store, key)?;
         }
         Command::List => {
-            if store.len() == 0 {
+            if store.is_empty() {
                 println!("No entries stored.");
             } else {
                 for (key, entry) in store.ordered() {
@@ -194,7 +221,8 @@ fn handle_remove(database: &mut Database, store: &mut Store, key: String) -> KvR
 }
 
 fn handle_import(database: &mut Database, store: &mut Store, path: &Path) -> KvResult<()> {
-    let contents = fs::read_to_string(path)?;
+    let contents = fs::read_to_string(path)
+        .map_err(|error| KvError::io_path("reading import file", path.to_path_buf(), error))?;
     if contents.trim().is_empty() {
         warn!("import file {} is empty; clearing database", path.display());
     }
@@ -227,7 +255,9 @@ fn handle_import(database: &mut Database, store: &mut Store, path: &Path) -> KvR
 fn export_to_path(store: &Store, path: &Path) -> KvResult<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).map_err(|error| {
+                KvError::io_path("creating export directory", parent.to_path_buf(), error)
+            })?;
         }
     }
 
@@ -245,7 +275,8 @@ fn export_to_path(store: &Store, path: &Path) -> KvResult<()> {
     }
 
     let json = serde_json::to_string_pretty(&map)?;
-    fs::write(path, format!("{json}\n"))?;
+    fs::write(path, format!("{json}\n"))
+        .map_err(|error| KvError::io_path("writing export file", path.to_path_buf(), error))?;
     Ok(())
 }
 
