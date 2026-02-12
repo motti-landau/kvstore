@@ -18,6 +18,7 @@ pub struct Entry {
     tags: Vec<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    expires_at: Option<DateTime<Utc>>,
 }
 
 impl Entry {
@@ -28,6 +29,7 @@ impl Entry {
             tags,
             created_at: now,
             updated_at: now,
+            expires_at: None,
         }
     }
 
@@ -36,12 +38,14 @@ impl Entry {
         tags: Vec<String>,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
+        expires_at: Option<DateTime<Utc>>,
     ) -> Self {
         Self {
             value,
             tags,
             created_at,
             updated_at,
+            expires_at,
         }
     }
 
@@ -50,6 +54,7 @@ impl Entry {
         tags_json: &str,
         created_at: &str,
         updated_at: &str,
+        expires_at: Option<&str>,
     ) -> KvResult<Self> {
         let tags: Vec<String> = if tags_json.trim().is_empty() {
             Vec::new()
@@ -59,12 +64,17 @@ impl Entry {
 
         let created_at = DateTime::parse_from_rfc3339(created_at)?.with_timezone(&Utc);
         let updated_at = DateTime::parse_from_rfc3339(updated_at)?.with_timezone(&Utc);
+        let expires_at = expires_at
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| DateTime::parse_from_rfc3339(text).map(|dt| dt.with_timezone(&Utc)))
+            .transpose()?;
 
         Ok(Self {
             value,
             tags,
             created_at,
             updated_at,
+            expires_at,
         })
     }
 
@@ -73,11 +83,13 @@ impl Entry {
         let created_at = existing
             .map(|entry| entry.created_at)
             .unwrap_or_else(|| now);
+        let expires_at = existing.and_then(|entry| entry.expires_at);
         Self {
             value,
             tags,
             created_at,
             updated_at: now,
+            expires_at,
         }
     }
 
@@ -108,6 +120,29 @@ impl Entry {
 
     pub fn updated_at(&self) -> DateTime<Utc> {
         self.updated_at
+    }
+
+    pub fn expires_at(&self) -> Option<DateTime<Utc>> {
+        self.expires_at
+    }
+
+    pub fn set_ttl_minutes(&mut self, ttl_minutes: Option<u64>) {
+        self.expires_at =
+            ttl_minutes.map(|minutes| Utc::now() + chrono::Duration::minutes(minutes as i64));
+    }
+
+    pub fn extend_ttl_minutes(&mut self, ttl_minutes: u64) {
+        let now = Utc::now();
+        let base = self
+            .expires_at
+            .map(|expires_at| expires_at.max(now))
+            .unwrap_or(now);
+        self.expires_at = Some(base + chrono::Duration::minutes(ttl_minutes as i64));
+    }
+
+    pub fn ttl_remaining_minutes(&self) -> Option<i64> {
+        self.expires_at
+            .map(|expires_at| (expires_at - Utc::now()).num_minutes())
     }
 }
 
@@ -426,6 +461,17 @@ mod tests {
         let contents = fs::read_to_string(recent_path).unwrap();
         let lines: Vec<_> = contents.lines().collect();
         assert_eq!(lines, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn extending_expired_ttl_starts_from_now() {
+        let mut entry = Entry::new("value".to_string(), vec![]);
+        entry.expires_at = Some(Utc::now() - chrono::Duration::minutes(10));
+
+        entry.extend_ttl_minutes(5);
+
+        let remaining = entry.ttl_remaining_minutes().unwrap_or_default();
+        assert!(remaining >= 4, "remaining ttl too small: {remaining}");
     }
 }
 

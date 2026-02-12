@@ -18,7 +18,7 @@ AUDIT_FLAGS ?= --db $(AUDIT_DB) --no-fetch --stale
 
 COMMON_FLAGS := $(if $(strip $(NS)),-n $(NS),) $(if $(strip $(DATA_FILE)),--data-file $(DATA_FILE),)
 
-.PHONY: help build fmt check test clippy audit install run serve html list get add remove search recent export import put-file get-file
+.PHONY: help build fmt check test clippy audit install run serve shutdown html list get add remove search recent export import put-file get-file
 
 help:
 	@echo "kvstore shortcuts"
@@ -37,6 +37,7 @@ help:
 	@echo ""
 	@echo "High-level commands:"
 	@echo "  make serve NS=work PORT=7878"
+	@echo "  make shutdown PORT=7878"
 	@echo "  make html NS=work HTML_OUT=work-view.html"
 	@echo "  make add NS=work KEY=todo VALUE='ship v1' TAGS='@roadmap @priority'"
 	@echo "  make get NS=work KEY=todo"
@@ -81,6 +82,15 @@ run:
 
 serve:
 	cargo run -- $(COMMON_FLAGS) serve --host $(HOST) --port $(PORT)
+
+shutdown:
+	@pids=$$(lsof -tiTCP:$(PORT) -sTCP:LISTEN 2>/dev/null); \
+	if [ -z "$$pids" ]; then \
+		echo "No listening process found on port $(PORT)."; \
+	else \
+		echo "Stopping process(es) on port $(PORT): $$pids"; \
+		kill $$pids; \
+	fi
 
 html:
 	cargo run -- $(COMMON_FLAGS) html --path $(HTML_OUT)

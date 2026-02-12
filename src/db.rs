@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use chrono::{Duration, Utc};
 use log::{debug, info};
 use rusqlite::{params, Connection, Transaction};
 
@@ -35,9 +36,9 @@ impl Database {
 
     /// Loads every entry from the database so the in-memory cache can be primed.
     pub fn load_entries(&self) -> KvResult<Vec<(String, Entry)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT key, value, tags, created_at, updated_at FROM kv ORDER BY key ASC")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT key, value, tags, created_at, updated_at, expires_at FROM kv ORDER BY key ASC",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok(Row {
                 key: row.get(0)?,
@@ -45,14 +46,20 @@ impl Database {
                 tags: row.get(2)?,
                 created_at: row.get(3)?,
                 updated_at: row.get(4)?,
+                expires_at: row.get(5)?,
             })
         })?;
 
         let mut entries = Vec::new();
         for row in rows {
             let row = row?;
-            let entry =
-                Entry::from_persisted(row.value, &row.tags, &row.created_at, &row.updated_at)?;
+            let entry = Entry::from_persisted(
+                row.value,
+                &row.tags,
+                &row.created_at,
+                &row.updated_at,
+                row.expires_at.as_deref(),
+            )?;
             entries.push((row.key, entry));
         }
 
@@ -100,18 +107,20 @@ impl Database {
     fn execute_upsert(tx: &Transaction<'_>, key: &str, entry: &Entry) -> KvResult<()> {
         let tags_json = entry.tags_json()?;
         tx.execute(
-            "INSERT INTO kv (key, value, tags, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO kv (key, value, tags, created_at, updated_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(key)
              DO UPDATE SET value = excluded.value,
                            tags = excluded.tags,
-                           updated_at = excluded.updated_at",
+                           updated_at = excluded.updated_at,
+                           expires_at = excluded.expires_at",
             params![
                 key,
                 entry.value(),
                 tags_json,
                 entry.created_at().to_rfc3339(),
-                entry.updated_at().to_rfc3339()
+                entry.updated_at().to_rfc3339(),
+                entry.expires_at().map(|ts| ts.to_rfc3339()),
             ],
         )?;
         Ok(())
@@ -127,24 +136,58 @@ impl Database {
         debug!("database user_version={}", user_version);
 
         if user_version == 0 {
+            let kv_table_exists: i64 = self.conn.query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'kv'",
+                [],
+                |row| row.get(0),
+            )?;
+            if kv_table_exists > 0 {
+                return Err(KvError::InvalidInput(
+                    "unsupported legacy database detected; delete the database file to recreate it"
+                        .to_string(),
+                ));
+            }
+
             let tx = self.conn.transaction()?;
             tx.execute_batch(
                 "
-                CREATE TABLE IF NOT EXISTS kv (
+                CREATE TABLE kv (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
                     tags TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    expires_at TEXT
                 );
-                PRAGMA user_version = 1;
+                PRAGMA user_version = 2;
             ",
             )?;
             tx.commit()?;
-            info!("initialized kv schema (user_version=1)");
+            info!("initialized kv schema (user_version=2)");
+            return Ok(());
+        }
+
+        if user_version != 2 {
+            return Err(KvError::InvalidInput(format!(
+                "unsupported database schema version {user_version}; delete the database file to recreate it"
+            )));
         }
 
         Ok(())
+    }
+
+    pub fn cleanup_expired_entries(&mut self) -> KvResult<usize> {
+        let tx = self.conn.transaction()?;
+        let threshold = (Utc::now() - Duration::hours(1)).to_rfc3339();
+        let deleted = tx.execute(
+            "DELETE FROM kv WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+            params![threshold],
+        )?;
+        tx.commit()?;
+        if deleted > 0 {
+            info!("cleaned {} ttl-expired entries", deleted);
+        }
+        Ok(deleted)
     }
 }
 
@@ -154,4 +197,5 @@ struct Row {
     tags: String,
     created_at: String,
     updated_at: String,
+    expires_at: Option<String>,
 }

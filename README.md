@@ -14,6 +14,7 @@ Data is persisted in SQLite, cached in memory for fast reads, and exposed throug
 - Markdown file workflows:
   - `put-file` stores full file content in a key
   - `get-file` writes key content back to a file
+- Optional TTL per record (in minutes), default is permanent
 - HTML UI:
   - Static export (`kv html`)
   - Live local server with polling (`kv serve`)
@@ -24,6 +25,7 @@ Data is persisted in SQLite, cached in memory for fast reads, and exposed throug
   - tag explorer with counts and last update time
   - grouped-by-tag mode
   - client-side filtering and tag chips
+  - live CRUD for records and tags when running `kv serve`
 
 ## Installation
 ```bash
@@ -115,6 +117,8 @@ Live page behavior:
 - serves UI from `/`
 - polls `/data` every few seconds
 - applies updates in-place when payload changes (no manual refresh required)
+- exposes write endpoints under `/api/*` for UI mutations
+- runs TTL cleanup with up to ~1 hour cleanup SLA after expiry
 
 ### Current UI Capabilities
 - Main records table is shown first.
@@ -123,6 +127,16 @@ Live page behavior:
 - Tag explorer sorted by tag activity (latest update first), with count and pagination.
 - Toggle between list view and grouped-by-tag view.
 - Search filters key/value/tags client-side.
+- Record CRUD in-page (create/update/delete) from the editor and row actions.
+- TTL in-page:
+  - set TTL in minutes during save (blank means permanent)
+  - view remaining time in records table
+  - extend TTL from row action
+- Tag CRUD from the live UI:
+  - add/remove per record
+  - rename/delete globally from Tag Explorer
+
+Note: static HTML export (`kv html`) is read-only by design.
 
 ### Live Update Troubleshooting
 If you run `kv serve` and updates do not appear:
@@ -155,6 +169,7 @@ make list NS=work
 make add NS=work KEY=todo VALUE="ship v1" TAGS="@roadmap @priority"
 make serve NS=work PORT=7878
 make html NS=work HTML_OUT=work-view.html
+make audit
 make put-file NS=work KEY=project_summary FILE=./notes/summary.md TAGS="@codex @summary"
 ```
 
