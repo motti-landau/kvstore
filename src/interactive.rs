@@ -10,6 +10,9 @@ use crate::store::{SearchScope, Store};
 use crate::KvResult;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(120);
+const KEY_PREVIEW_CHARS: usize = 56;
+const VALUE_PREVIEW_CHARS: usize = 110;
+const TAGS_PREVIEW_CHARS: usize = 56;
 
 /// Runs an interactive fuzzy-search session that refreshes results as the user types.
 pub fn live_search(storage: &Store, limit: usize, scope: SearchScope) -> KvResult<()> {
@@ -99,7 +102,10 @@ fn render(
             lines += 1;
         } else {
             for entry in matches {
-                write_line(stdout, &entry.entry.summary(entry.key))?;
+                write_line(
+                    stdout,
+                    &preview_line(entry.key, entry.entry.value(), entry.entry.tags()),
+                )?;
                 lines += 1;
             }
         }
@@ -134,6 +140,48 @@ fn write_line(stdout: &mut io::Stdout, text: &str) -> KvResult<()> {
     )?;
     writeln!(stdout, "{text}")?;
     Ok(())
+}
+
+fn preview_line(key: &str, value: &str, tags: &[String]) -> String {
+    let key = truncate_for_display(&single_line(key), KEY_PREVIEW_CHARS);
+    let value = if value.trim().is_empty() {
+        "(empty)".to_string()
+    } else {
+        truncate_for_display(&single_line(value), VALUE_PREVIEW_CHARS)
+    };
+
+    if tags.is_empty() {
+        format!("{key} = {value}")
+    } else {
+        let joined_tags = tags.join(", ");
+        let tags = truncate_for_display(&single_line(&joined_tags), TAGS_PREVIEW_CHARS);
+        format!("{key} = {value} [tags: {tags}]")
+    }
+}
+
+fn single_line(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_for_display(input: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let mut chars = input.chars();
+    let mut output = String::new();
+    for _ in 0..max_chars {
+        let Some(c) = chars.next() else {
+            return input.to_string();
+        };
+        output.push(c);
+    }
+
+    if chars.next().is_some() {
+        format!("{output}...")
+    } else {
+        output
+    }
 }
 
 struct RawTerminalGuard;

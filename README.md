@@ -1,103 +1,201 @@
 # kvstore
 
-`kvstore` is a lightweight Rust CLI for storing and retrieving key–value pairs.  
-Entries are durably stored in a bundled SQLite database while a fast in-memory cache backs fuzzy lookups, implicit command inference, and persisted recent history.
+`kvstore` is a lightweight Rust CLI for storing and retrieving key-value pairs.
+Data is persisted in SQLite, cached in memory for fast reads, and exposed through both CLI and HTML viewers.
 
-## Features
-- Bundled SQLite persistence (`data.db` by default) with automatic schema setup.
-- Memory-cached reads for instant lookups and fuzzy search.
-- Implicit command inference: type just `kv`, `kv key`, or `kv key value [@tag …]` for the common flows.
-- Add, update, list, fetch, delete, recent history, export, and import entries (explicit subcommands still work when you need them).
-- Optional tagging on every key; tags are stored and normalised.
-- Fuzzy search over keys _and_ tags (configurable to target one or the other).
-- Inline live-search mode (`kv f`) that refreshes results as you type in the same terminal buffer.
-- Recent command (`kv recent`) that remembers the last accesses across CLI sessions.
+## Highlights
+- Namespace-first storage model (`default`, `work`, `live`, `investments`, etc.).
+- SQLite persistence + in-memory cache for fast `get`, `list`, and fuzzy search.
+- Implicit command inference:
+  - `kv` -> interactive fuzzy mode
+  - `kv <key>` -> get
+  - `kv <key> <value> [@tag ...]` -> add/update
+- Explicit commands for add/get/remove/list/search/recent/export/import.
+- Markdown file workflows:
+  - `put-file` stores full file content in a key
+  - `get-file` writes key content back to a file
+- HTML UI:
+  - Static export (`kv html`)
+  - Live local server with polling (`kv serve`)
+  - Runtime output shows `namespace` + `data source` path to avoid confusion
+- Rich HTML experience:
+  - records-first layout
+  - recents panel
+  - tag explorer with counts and last update time
+  - grouped-by-tag mode
+  - client-side filtering and tag chips
 
 ## Installation
-
 ```bash
 cargo install --path .
 ```
 
-This places the `kvstore` binary in `~/.cargo/bin`. Add an alias for convenient access:
-
+Make sure Cargo bin is on `PATH`:
 ```bash
-echo 'alias kv=kvstore' >> ~/.zshrc   # or ~/.bashrc
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-Now `kv …` works from any directory.
+Optional alias:
+```bash
+echo 'alias kv=kvstore' >> ~/.zshrc
+source ~/.zshrc
+```
 
 ## Storage Model
-- On startup the app opens the SQLite database, applies migrations, and loads all rows into memory (`HashMap<String, Entry>` + cached key list).
-- Reads (`get`, `list`, `search`, `f`) operate exclusively on the in-memory cache.
-- Mutations (`add`, `remove`, `import`) are wrapped in SQLite transactions; once the write succeeds the cache is updated in lockstep.
-- Export/import still work with JSON snapshots for easy backups or transfers.
 
-## Logging & History
-- Runtime logs default to `logs/kvstore.log` relative to the working directory (directory created on demand).
-- Recent key usage is persisted to `logs/recent.log` so `kv recent` survives across runs.
-- Both files and the retention limit (default 25 entries) are configurable in `kvstore.toml`.
-- Environment variable `KVSTORE_LOG_LEVEL` continues to override the configured log level when present.
+### Namespaces (default behavior)
+If you do not pass `--data-file`, kvstore stores data under:
+- `~/.kvstore/namespaces/<namespace>/data.db`
+- `~/.kvstore/namespaces/<namespace>/logs/recent.log`
 
-### Configuration snippet
+Default namespace is `default`.
+
+Examples:
+```bash
+kv -n work add roadmap "Q2 goals" @planning
+kv -n live list
+kv -n investments serve --port 7888
+```
+
+### Namespace Selection
+Precedence:
+1. `--namespace/-n <name>`
+2. `KVSTORE_NAMESPACE` environment variable
+3. `default`
+
+Valid namespace characters:
+- letters, numbers, `_`, `-`, `.`
+
+### Advanced Override
+You can still bypass namespace DB resolution with:
+```bash
+kv --data-file /path/to/custom.db ...
+```
+
+This is intended for advanced/custom workflows.
+
+## Commands
+
+### Implicit
+- `kv` -> interactive mode
+- `kv <key>` -> get
+- `kv <key> <value> [@tag ...]` -> add/update
+
+### Explicit
+- `kv add <key> [value] [@tag ...]`
+- `kv get <key>`
+- `kv remove <key>`
+- `kv list`
+- `kv search <pattern> [--keys|--tags] [-l <limit>]`
+- `kv interactive`
+- `kv recent [-l <count>]`
+- `kv export <path.json>`
+- `kv import <path.json>`
+- `kv html [-o|--path <file.html>]`
+- `kv serve [--host 127.0.0.1] [-p|--port 7878]`
+- `kv put-file <key> <path.md> [@tag ...] [--any-file]`
+- `kv get-file <key> <path.md> [--any-file]`
+
+## HTML UI
+
+### Static Export
+```bash
+kv -n work html --path work-view.html
+```
+
+### Live Server (Polling)
+```bash
+kv -n work serve
+# open http://127.0.0.1:7878
+```
+
+Live page behavior:
+- serves UI from `/`
+- polls `/data` every few seconds
+- applies updates in-place when payload changes (no manual refresh required)
+
+### Current UI Capabilities
+- Main records table is shown first.
+- Records sorted by latest update.
+- Recents panel shows latest updated keys.
+- Tag explorer sorted by tag activity (latest update first), with count and pagination.
+- Toggle between list view and grouped-by-tag view.
+- Search filters key/value/tags client-side.
+
+### Live Update Troubleshooting
+If you run `kv serve` and updates do not appear:
+1. Ensure writer and server use the same namespace (for example both with `-n work`).
+2. Ensure writer and server use the same database override (if using `--data-file`).
+3. Check server startup output (`Namespace:` and `Data source:` lines) and compare to your writer command.
+
+## File Workflows (Codex-friendly)
+
+Store full markdown content under a key:
+```bash
+kv -n work put-file project_summary ./notes/project_summary.md @codex @summary
+```
+
+Write key content back to a file:
+```bash
+kv -n work get-file project_summary ./notes/project_summary_out.md
+```
+
+By default, `put-file` and `get-file` require `.md` paths.
+Use `--any-file` to disable that guard.
+
+## Makefile Shortcuts
+A `Makefile` is included for common commands.
+
+Examples:
+```bash
+make help
+make list NS=work
+make add NS=work KEY=todo VALUE="ship v1" TAGS="@roadmap @priority"
+make serve NS=work PORT=7878
+make html NS=work HTML_OUT=work-view.html
+make put-file NS=work KEY=project_summary FILE=./notes/summary.md TAGS="@codex @summary"
+```
+
+Main variables:
+- `NS` (default: `default`)
+- `DATA_FILE` (advanced override)
+- `HOST` / `PORT` for `serve`
+- `HTML_OUT` for `html`
+- `KEY`, `VALUE`, `FILE`, `TAGS`, `QUERY`, `LIMIT` for command-specific targets
+
+## Interactive Mode
+Launch with:
+```bash
+kv -n work
+# or
+kv -n work interactive
+```
+
+Interactive output now uses compact previews:
+- multiline values are flattened to one line
+- long keys/values/tags are truncated for readability
+
+## Configuration (`kvstore.toml`)
 ```toml
 [logging]
 level = "warn"       # trace | debug | info | warn | error
 file = "kvstore.log" # relative paths live under ./logs/
 
 [history]
-file = "logs/recent.log"
+file = "logs/recent.log" # optional override; default is namespace path
 limit = 25
 ```
 
-## Usage
-
-### Implicit commands
-- `kv` (no arguments) launches interactive mode.
-- `kv <key>` fetches the value for `<key>`.
-- `kv <key> <value> [@tag …]` stores/updates `<key>` with `<value>` and optional tags.
-- Prefix any tags with `@` (e.g., `@prod @api`). Supplying only tags records an entry with an empty value.
-- Reserved words (`add`, `get`, `recent`, etc.) are always treated as explicit commands; access literal keys with `kv get <reserved>`.
-
-### Explicit subcommands (still available when you need them)
-| Command           | Description |
-|-------------------|-------------|
-| `kv remove <key>` | Delete a key |
-| `kv list`         | List keys in lexical order |
-| `kv search …`     | Fuzzy search keys & tags (`--keys`/`--tags`, `-l` limit) |
-| `kv recent`       | Show the last accessed keys (persisted across sessions) |
-| `kv interactive`  | Live fuzzy search (same as running bare `kv`) |
-| `kv export …`     | Export to JSON |
-| `kv import …`     | Import from JSON |
-
-Side note: legacy aliases like `kv add`, `kv get`, and their single-letter forms remain functional for scripts that depend on them.
-
-### Tagging
-- Append `@tag` arguments during implicit or explicit add/update (`kv foo bar @prod @api`).
-- Repeating tag arguments replaces the tag set for that key.
-- Omitting tags keeps the existing tag set when updating a value.
-
-### Search Modes
-- Default: search keys and tags simultaneously.
-- `--keys` limits fuzzy matching to keys only.
-- `--tags` limits fuzzy matching to tags only.
-- Live mode (`kv f`) accepts the same `--keys`/`--tags` flags.
-
-### Live Search Experience
-- Launch with `kv f`.
-- Results stay in the current terminal page; press `Esc`, `Enter`, or `Ctrl+C` to exit.
-- `-l/--limit` controls how many matches appear (default: 10).
-
-## Data Management
-- Pass `--data-file path/to/store.db` to operate on an alternative SQLite database.
-- `kv export` / `kv import` provide quick JSON backups or migrations between machines.
-
 ## Development
-
 ```bash
 cargo fmt
 cargo test
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-The workspace contains no additional tests by default, but the CLI is exercised via the integration workflow above.
+## Runtime Artifacts
+These files are runtime outputs and should not be committed:
+- `kvstore-view.html`
+- `data.db`, `data.db-shm`, `data.db-wal`
+- `logs/`

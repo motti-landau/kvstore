@@ -6,6 +6,7 @@ pub const DEFAULT_INTERACTIVE_LIMIT: usize = 10;
 const HELP_EXAMPLES: &str = r#"Examples:
   kv foo bar            # Add key/value implicitly
   kv foo bar @prod @api # Add with tags
+  kv -n work foo bar    # Same command in 'work' namespace
   kv foo                # Get value implicitly
   kv foo @prod          # Add with empty value and tags
   kv                    # Interactive fuzzy finder
@@ -19,6 +20,10 @@ Explicit commands:
   kv interactive        # Live fuzzy finder mode
   kv export backup.json # Export to JSON
   kv import backup.json # Import from JSON
+  kv html               # Generate browser view
+  kv serve              # Run local live viewer (polling)
+  kv put-file notes README.md @project # Save markdown file contents
+  kv get-file notes out.md             # Write value to markdown file
   kv recent             # Show recently accessed keys
 "#;
 
@@ -39,6 +44,15 @@ pub const RESERVED_KEYWORDS: &[&str] = &[
     "e",
     "import",
     "i",
+    "html",
+    "view",
+    "browse",
+    "serve",
+    "sv",
+    "put-file",
+    "pf",
+    "get-file",
+    "gf",
     "recent",
 ];
 
@@ -46,6 +60,7 @@ pub const RESERVED_KEYWORDS: &[&str] = &[
 #[derive(Debug)]
 pub struct Cli {
     pub data_file: Option<PathBuf>,
+    pub namespace: Option<String>,
     pub command: Command,
 }
 
@@ -62,7 +77,11 @@ Supports implicit commands (kv <key> ...) and explicit subcommands for advanced 
     after_long_help = HELP_EXAMPLES
 )]
 struct RawCli {
-    /// Path to the SQLite database file. Defaults to ./data.db
+    /// Namespace for storage under $HOME/.kvstore/namespaces/<name>/...
+    #[arg(short, long, global = true, value_name = "NAME")]
+    namespace: Option<String>,
+
+    /// Path to the SQLite database file (advanced override; bypasses namespace DB path)
     #[arg(long, global = true, value_name = "FILE")]
     data_file: Option<PathBuf>,
 
@@ -132,6 +151,48 @@ enum RawCommand {
         /// Source file path.
         path: PathBuf,
     },
+    /// Generates a standalone HTML file to browse all entries.
+    #[command(name = "html", aliases = ["view", "browse"])]
+    Html {
+        /// Destination HTML file path.
+        #[arg(short, long, value_name = "FILE", default_value = "kvstore-view.html")]
+        path: PathBuf,
+    },
+    /// Runs a local HTTP server with a live-updating viewer. Shortcut: `sv`
+    #[command(name = "serve", alias = "sv")]
+    Serve {
+        /// Bind host.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Bind port.
+        #[arg(short, long, default_value_t = 7878)]
+        port: u16,
+    },
+    /// Stores key value from a local file (Markdown by default). Shortcut: `pf`
+    #[command(name = "put-file", alias = "pf", trailing_var_arg = true)]
+    PutFile {
+        /// Target key.
+        key: String,
+        /// Source file path.
+        path: PathBuf,
+        /// Optional @tags (e.g. @project @docs)
+        #[arg(value_name = "@TAG", num_args = 0..)]
+        tags: Vec<String>,
+        /// Allow non-markdown file paths.
+        #[arg(long)]
+        any_file: bool,
+    },
+    /// Writes key value into a local file (Markdown by default). Shortcut: `gf`
+    #[command(name = "get-file", alias = "gf")]
+    GetFile {
+        /// Source key.
+        key: String,
+        /// Output file path.
+        path: PathBuf,
+        /// Allow non-markdown file paths.
+        #[arg(long)]
+        any_file: bool,
+    },
     /// Displays the most recently accessed keys.
     #[command(name = "recent")]
     Recent {
@@ -175,6 +236,24 @@ pub enum Command {
     Import {
         path: PathBuf,
     },
+    Html {
+        path: PathBuf,
+    },
+    Serve {
+        host: String,
+        port: u16,
+    },
+    PutFile {
+        key: String,
+        path: PathBuf,
+        tags: Vec<String>,
+        any_file: bool,
+    },
+    GetFile {
+        key: String,
+        path: PathBuf,
+        any_file: bool,
+    },
     Recent {
         limit: usize,
     },
@@ -194,6 +273,7 @@ impl Cli {
 
         Self {
             data_file: raw.data_file,
+            namespace: raw.namespace,
             command,
         }
     }
@@ -230,6 +310,28 @@ fn convert_command(raw: RawCommand) -> Command {
         },
         RawCommand::Export { path } => Command::Export { path },
         RawCommand::Import { path } => Command::Import { path },
+        RawCommand::Html { path } => Command::Html { path },
+        RawCommand::Serve { host, port } => Command::Serve { host, port },
+        RawCommand::PutFile {
+            key,
+            path,
+            tags,
+            any_file,
+        } => Command::PutFile {
+            key,
+            path,
+            tags: parse_tags_only(&tags),
+            any_file,
+        },
+        RawCommand::GetFile {
+            key,
+            path,
+            any_file,
+        } => Command::GetFile {
+            key,
+            path,
+            any_file,
+        },
         RawCommand::Recent { limit } => Command::Recent { limit },
         RawCommand::External(args) => infer_command(args),
     }
@@ -322,6 +424,20 @@ fn parse_tag(token: &str) -> Option<String> {
         );
     }
     Some(tag.to_string())
+}
+
+fn parse_tags_only(tokens: &[String]) -> Vec<String> {
+    let mut tags = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        let Some(tag) = parse_tag(token) else {
+            usage_error(
+                ErrorKind::InvalidValue,
+                "Tags must start with '@' for this command (example: @docs).",
+            );
+        };
+        tags.push(tag);
+    }
+    tags
 }
 
 fn is_reserved(word: &str) -> bool {
