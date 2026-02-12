@@ -11,3 +11,7 @@ config/kvstore.toml
 
 # macOS artifacts
 .DS_Store
+
+# local skill files
+skills/kvstore-wcrud/SKILL.md
+skills/kvstore-wcrud/agents/openai.yaml

@@ -1,7 +1,0 @@
-interface:
-  display_name: "KVStore wCRUD"
-  short_description: "Persist project memory in kvstore safely"
-  default_prompt: "Use $kvstore-wcrud to store or update durable project notes in kvstore with the correct namespace and tags."
-
-policy:
-  allow_implicit_invocation: true
